@@ -41,15 +41,20 @@ def ensure_files():
         os.makedirs(TRAINER_DIR)
 
     if not os.path.exists(ADMIN_FILE):
-        # create default admin.json if missing
         with open(ADMIN_FILE, "w") as f:
             json.dump({"username": "admin", "password": "admin123"}, f, indent=2)
 
 
 def load_students():
     global students
-    df = pd.read_csv(STUDENTS_FILE)
-    # Ensure correct dtypes
+
+    # If file exists but empty/corrupt, recreate with headers
+    try:
+        df = pd.read_csv(STUDENTS_FILE)
+    except:
+        df = pd.DataFrame(columns=["ID", "Name"])
+        df.to_csv(STUDENTS_FILE, index=False)
+
     if "ID" not in df.columns or "Name" not in df.columns:
         df = pd.DataFrame(columns=["ID", "Name"])
         df.to_csv(STUDENTS_FILE, index=False)
@@ -58,7 +63,6 @@ def load_students():
         students = {}
         return
 
-    # Convert IDs to int safely
     df["ID"] = df["ID"].astype(int)
     students = dict(zip(df["ID"], df["Name"]))
 
@@ -130,21 +134,26 @@ def add_student_window():
 def view_students_window():
     win = tk.Toplevel(root)
     win.title("Students List")
-    win.geometry("500x350")
+    win.geometry("520x380")
 
     tree = ttk.Treeview(win, columns=("ID", "Name"), show="headings")
     tree.heading("ID", text="ID")
     tree.heading("Name", text="Name")
     tree.column("ID", width=120)
-    tree.column("Name", width=320)
+    tree.column("Name", width=360)
     tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-    df = pd.read_csv(STUDENTS_FILE)
-    if len(df) > 0:
-        df["ID"] = df["ID"].astype(int)
+    def refresh_table():
+        for item in tree.get_children():
+            tree.delete(item)
 
-    for _, row in df.iterrows():
-        tree.insert("", "end", values=(row["ID"], row["Name"]))
+        df2 = pd.read_csv(STUDENTS_FILE)
+        if len(df2) > 0:
+            df2["ID"] = df2["ID"].astype(int)
+        for _, row in df2.iterrows():
+            tree.insert("", "end", values=(row["ID"], row["Name"]))
+
+    refresh_table()
 
     btn_frame = tk.Frame(win)
     btn_frame.pack(pady=8)
@@ -155,15 +164,6 @@ def view_students_window():
             return None
         values = tree.item(sel[0], "values")
         return int(values[0])
-
-    def refresh_table():
-        for item in tree.get_children():
-            tree.delete(item)
-        df2 = pd.read_csv(STUDENTS_FILE)
-        if len(df2) > 0:
-            df2["ID"] = df2["ID"].astype(int)
-        for _, row in df2.iterrows():
-            tree.insert("", "end", values=(row["ID"], row["Name"]))
 
     def delete_selected():
         sid = get_selected_id()
@@ -218,6 +218,68 @@ def view_students_window():
 
     ttk.Button(btn_frame, text="Edit Selected", command=edit_selected).grid(row=0, column=0, padx=8)
     ttk.Button(btn_frame, text="Delete Selected", command=delete_selected).grid(row=0, column=1, padx=8)
+    ttk.Button(btn_frame, text="Refresh", command=refresh_table).grid(row=0, column=2, padx=8)
+
+
+# ---------------- ATTENDANCE VIEWER (GUI) ----------------
+def view_attendance_window():
+    win = tk.Toplevel(root)
+    win.title("Attendance Records")
+    win.geometry("700x420")
+
+    # Top: Filter controls
+    top = tk.Frame(win)
+    top.pack(pady=8)
+
+    tk.Label(top, text="Filter by Date (DD-MM-YYYY):").pack(side="left", padx=5)
+    date_entry = tk.Entry(top)
+    date_entry.pack(side="left", padx=5)
+
+    # Table
+    columns = ("ID", "Name", "Date", "Time")
+    tree = ttk.Treeview(win, columns=columns, show="headings")
+
+    for col in columns:
+        tree.heading(col, text=col)
+        tree.column(col, width=160)
+
+    tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+    def load_data(filter_date=None):
+        for row in tree.get_children():
+            tree.delete(row)
+
+        if not os.path.exists(ATTENDANCE_FILE) or os.path.getsize(ATTENDANCE_FILE) == 0:
+            return
+
+        df = pd.read_csv(ATTENDANCE_FILE)
+
+        # Safety if file missing expected columns
+        needed = {"ID", "Name", "Date", "Time"}
+        if not needed.issubset(set(df.columns)):
+            return
+
+        if filter_date:
+            df = df[df["Date"] == filter_date]
+
+        for _, r in df.iterrows():
+            tree.insert("", "end", values=(r["ID"], r["Name"], r["Date"], r["Time"]))
+
+    def apply_filter():
+        d = date_entry.get().strip()
+        load_data(d)
+
+    def refresh():
+        date_entry.delete(0, tk.END)
+        load_data()
+
+    load_data()
+
+    btn_frame = tk.Frame(win)
+    btn_frame.pack(pady=8)
+
+    ttk.Button(btn_frame, text="Apply Filter", command=apply_filter).grid(row=0, column=0, padx=10)
+    ttk.Button(btn_frame, text="Refresh", command=refresh).grid(row=0, column=1, padx=10)
 
 
 # ---------------- DATASET CAPTURE (GUI) ----------------
@@ -245,7 +307,6 @@ def capture_dataset_window():
             messagebox.showerror("Error", "Student ID not found. Add student first.")
             return
 
-        # Capture with OpenCV
         face = cv2.CascadeClassifier(CASCADE_FILE)
         if face.empty():
             messagebox.showerror("Error", "Haar cascade not loaded for capture.")
@@ -273,7 +334,7 @@ def capture_dataset_window():
             cv2.imshow("Dataset Capture (ESC to stop)", frame)
 
             key = cv2.waitKey(1)
-            if key == 27 or count >= CAPTURE_COUNT:  # ESC
+            if key == 27 or count >= CAPTURE_COUNT:
                 break
 
         cam_local.release()
@@ -286,7 +347,6 @@ def capture_dataset_window():
 
 # ---------------- TRAIN MODEL (GUI) ----------------
 def train_model_gui():
-    # Uses your existing trainer.py
     if not os.path.exists("trainer.py"):
         messagebox.showerror("Error", "trainer.py not found in project folder.")
         return
@@ -371,12 +431,10 @@ def stop_and_save():
         cam.release()
     cv2.destroyAllWindows()
 
-    # nothing detected
     if len(attendance_run_df) == 0:
         messagebox.showinfo("Saved", "No recognized students detected this run.")
         return
 
-    # merge with existing CSV and drop duplicates by ID+Date
     if os.path.exists(ATTENDANCE_FILE) and os.path.getsize(ATTENDANCE_FILE) > 0:
         old = pd.read_csv(ATTENDANCE_FILE)
         combined = pd.concat([old, attendance_run_df], ignore_index=True)
@@ -386,7 +444,6 @@ def stop_and_save():
         attendance_run_df.drop_duplicates(subset=["ID", "Date"], keep="first", inplace=True)
         attendance_run_df.to_csv(ATTENDANCE_FILE, index=False)
 
-    # reset run df for next run
     attendance_run_df = pd.DataFrame(columns=["ID", "Name", "Date", "Time"])
     messagebox.showinfo("Saved", "Attendance saved successfully!")
 
@@ -410,7 +467,7 @@ def main_app():
     global root
     root = tk.Tk()
     root.title("Face Recognition Attendance System")
-    root.geometry("460x520")
+    root.geometry("460x560")
     root.configure(bg="#1e1e1e")
 
     tk.Label(root, text="Face Recognition Attendance",
@@ -433,6 +490,10 @@ def main_app():
 
     tk.Button(root, text="Stop & Save Attendance", width=28, font=("Arial", 12),
               bg="red", fg="white", command=stop_and_save).pack(pady=8)
+
+    # ✅ NEW BUTTON
+    tk.Button(root, text="View Attendance", width=28, font=("Arial", 12),
+              command=view_attendance_window).pack(pady=8)
 
     tk.Button(root, text="Export Attendance to Excel", width=28, font=("Arial", 12),
               command=export_excel).pack(pady=8)
