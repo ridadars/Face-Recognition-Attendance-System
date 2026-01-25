@@ -1,5 +1,12 @@
+# Virtual environment
+venv/
+.env/
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Dataset & outputs (optional – your choice)
 dataset/
+Attendance.xlsx
 Attendance.csv
-.env
