@@ -6,6 +6,8 @@ import json
 import tkinter as tk
 from tkinter import messagebox, ttk
 import subprocess
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 # ================= CONFIG =================
 STUDENTS_FILE = "students.csv"
@@ -14,7 +16,6 @@ ADMIN_FILE = "admin.json"
 CASCADE_FILE = "haarcascade_frontalface_default.xml"
 TRAINER_FILE = os.path.join("trainer", "trainer.yml")
 DATASET_DIR = "dataset"
-TRAINER_DIR = "trainer"
 
 CONF_THRESHOLD = 70
 CAPTURE_COUNT = 30
@@ -33,10 +34,13 @@ root = None
 def ensure_files():
     if not os.path.exists(STUDENTS_FILE):
         pd.DataFrame(columns=["ID", "Name"]).to_csv(STUDENTS_FILE, index=False)
+
     if not os.path.exists(DATASET_DIR):
         os.makedirs(DATASET_DIR)
-    if not os.path.exists(TRAINER_DIR):
-        os.makedirs(TRAINER_DIR)
+
+    if not os.path.exists("trainer"):
+        os.makedirs("trainer")
+
     if not os.path.exists(ADMIN_FILE):
         with open(ADMIN_FILE, "w") as f:
             json.dump({"username": "admin", "password": "admin123"}, f, indent=2)
@@ -52,24 +56,21 @@ def load_students():
     students = dict(zip(df["ID"], df["Name"]))
 
 
-def save_students(df):
-    df.to_csv(STUDENTS_FILE, index=False)
-    load_students()
-
-
 # ================= MODEL =================
 def load_models():
     global face_cascade, recognizer
     face_cascade = cv2.CascadeClassifier(CASCADE_FILE)
     recognizer = cv2.face.LBPHFaceRecognizer_create()
+
     if not os.path.exists(TRAINER_FILE):
         messagebox.showwarning("Model Missing", "Train model first.")
         return False
+
     recognizer.read(TRAINER_FILE)
     return True
 
 
-# ================= STUDENT =================
+# ================= STUDENTS =================
 def add_student_window():
     win = tk.Toplevel(root)
     win.title("Add Student")
@@ -87,12 +88,16 @@ def add_student_window():
         try:
             sid = int(id_entry.get())
             name = name_entry.get().strip()
+
             df = pd.read_csv(STUDENTS_FILE)
             if sid in df["ID"].values:
                 messagebox.showerror("Error", "ID already exists")
                 return
+
             df.loc[len(df)] = [sid, name]
-            save_students(df)
+            df.to_csv(STUDENTS_FILE, index=False)
+            load_students()
+
             messagebox.showinfo("Success", "Student added")
             win.destroy()
         except:
@@ -111,13 +116,9 @@ def view_students_window():
     tree.heading("Name", text="Name")
     tree.pack(fill="both", expand=True)
 
-    def refresh():
-        tree.delete(*tree.get_children())
-        df = pd.read_csv(STUDENTS_FILE)
-        for _, r in df.iterrows():
-            tree.insert("", "end", values=(r["ID"], r["Name"]))
-
-    refresh()
+    df = pd.read_csv(STUDENTS_FILE)
+    for _, r in df.iterrows():
+        tree.insert("", "end", values=(r["ID"], r["Name"]))
 
 
 # ================= DATASET =================
@@ -143,10 +144,11 @@ def capture_dataset_window():
 
             for (x, y, w, h) in faces:
                 count += 1
-                cv2.imwrite(f"{DATASET_DIR}/User.{sid}.{count}.jpg", gray[y:y+h, x:x+w])
+                cv2.imwrite(f"{DATASET_DIR}/User.{sid}.{count}.jpg",
+                            gray[y:y+h, x:x+w])
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-            cv2.imshow("Capturing Dataset", frame)
+            cv2.imshow("Dataset Capture", frame)
             if cv2.waitKey(1) == 27 or count >= CAPTURE_COUNT:
                 break
 
@@ -169,6 +171,7 @@ def start_attendance():
     global cam, running
     if not load_models():
         return
+
     cam = cv2.VideoCapture(0)
     running = True
     process_frame()
@@ -176,6 +179,7 @@ def start_attendance():
 
 def process_frame():
     global running
+
     if not running:
         return
 
@@ -185,23 +189,27 @@ def process_frame():
 
     for (x, y, w, h) in faces:
         id_, conf = recognizer.predict(gray[y:y+h, x:x+w])
-        if id_ in students and conf < CONF_THRESHOLD:
-            name = students[id_]
-            date = datetime.date.today().strftime("%d-%m-%Y")
-            time = datetime.datetime.now().strftime("%H:%M:%S")
+        date = datetime.date.today().strftime("%d-%m-%Y")
+        time = datetime.datetime.now().strftime("%H:%M:%S")
 
-            attendance_run_df.loc[len(attendance_run_df)] = [id_, name, date, time]
-            label = name
+        if id_ in students and conf < CONF_THRESHOLD:
+            if not ((attendance_run_df["ID"] == id_) &
+                    (attendance_run_df["Date"] == date)).any():
+                attendance_run_df.loc[len(attendance_run_df)] = [
+                    id_, students[id_], date, time
+                ]
+            label = students[id_]
             color = (0, 255, 0)
         else:
             label = "Unknown"
             color = (0, 0, 255)
 
+        cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
         cv2.putText(frame, label, (x, y-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
     cv2.imshow("Attendance", frame)
+
     if cv2.waitKey(1) == 27:
         stop_and_save()
         return
@@ -210,7 +218,7 @@ def process_frame():
 
 
 def stop_and_save():
-    global running, cam
+    global running
     running = False
     cam.release()
     cv2.destroyAllWindows()
@@ -221,151 +229,127 @@ def stop_and_save():
 
     if os.path.exists(ATTENDANCE_FILE):
         old = pd.read_csv(ATTENDANCE_FILE)
-        combined = pd.concat([old, attendance_run_df])
-        combined.drop_duplicates(subset=["ID", "Date"], inplace=True)
-        combined.to_csv(ATTENDANCE_FILE, index=False)
+        df = pd.concat([old, attendance_run_df])
+        df.drop_duplicates(subset=["ID", "Date"], inplace=True)
     else:
-        attendance_run_df.to_csv(ATTENDANCE_FILE, index=False)
+        df = attendance_run_df
 
+    df.to_csv(ATTENDANCE_FILE, index=False)
     attendance_run_df.drop(attendance_run_df.index, inplace=True)
-    messagebox.showinfo("Saved", "Attendance saved successfully")
+    messagebox.showinfo("Saved", "Attendance saved")
 
 
 # ================= ANALYTICS DASHBOARD =================
 def attendance_analytics_window():
     win = tk.Toplevel(root)
     win.title("Attendance Analytics")
-    win.geometry("500x360")
+    win.geometry("420x260")
 
     tk.Label(win, text="Attendance Analytics Dashboard",
              font=("Segoe UI", 16, "bold")).pack(pady=15)
 
     total_students = len(students)
-    total_records = 0
-    today_present = 0
-    attendance_percent = 0
-    top_student = "N/A"
+    today = datetime.date.today().strftime("%d-%m-%Y")
 
     if os.path.exists(ATTENDANCE_FILE):
         df = pd.read_csv(ATTENDANCE_FILE)
-        total_records = len(df)
-        today = datetime.date.today().strftime("%d-%m-%Y")
-        today_present = df[df["Date"] == today]["ID"].nunique()
+        present_today = df[df["Date"] == today]["ID"].nunique()
+    else:
+        present_today = 0
 
-        if total_students > 0:
-            attendance_percent = (today_present / total_students) * 100
-
-        if len(df) > 0:
-            top_id = df["ID"].value_counts().idxmax()
-            top_student = students.get(top_id, f"ID {top_id}")
+    percent = (present_today / total_students * 100) if total_students else 0
 
     stats = [
         ("Total Students", total_students),
-        ("Total Attendance Records", total_records),
-        ("Present Today", today_present),
-        ("Attendance % Today", f"{attendance_percent:.2f}%"),
-        ("Most Frequent Student", top_student),
+        ("Present Today", present_today),
+        ("Attendance %", f"{percent:.2f}%")
     ]
 
-    for label, value in stats:
+    for k, v in stats:
         frame = tk.Frame(win)
         frame.pack(pady=6)
-        tk.Label(frame, text=f"{label}:", width=25, anchor="w").pack(side="left")
-        tk.Label(frame, text=value, font=("Segoe UI", 11, "bold")).pack(side="left")
+        tk.Label(frame, text=f"{k}:", width=18, anchor="w").pack(side="left")
+        tk.Label(frame, text=v,
+                 font=("Segoe UI", 11, "bold")).pack(side="left")
 
-
-def attendance_analytics_window():
-    win = tk.Toplevel(root)
-    win.title("Attendance Analytics Dashboard")
-    win.geometry("520x380")
-    win.configure(bg="#1e1e2e")
-
-    tk.Label(
+    tk.Button(
         win,
-        text="Attendance Analytics Dashboard",
-        font=("Segoe UI", 16, "bold"),
-        fg="white",
-        bg="#1e1e2e"
+        text="📊 View Attendance Charts",
+        command=attendance_charts_window
     ).pack(pady=15)
 
-    # ---------------- DATA CALCULATION ----------------
-    total_students = len(students)
-    total_records = 0
-    today_present = 0
-    attendance_percent = 0
-    top_student = "N/A"
 
-    if os.path.exists(ATTENDANCE_FILE) and os.path.getsize(ATTENDANCE_FILE) > 0:
-        df = pd.read_csv(ATTENDANCE_FILE)
+# ================= CHARTS WINDOW =================
+def attendance_charts_window():
+    if not os.path.exists(ATTENDANCE_FILE):
+        messagebox.showwarning("No Data", "No attendance data found")
+        return
 
-        total_records = len(df)
+    df = pd.read_csv(ATTENDANCE_FILE)
+    if len(df) == 0:
+        messagebox.showwarning("No Data", "Attendance file is empty")
+        return
 
-        today = datetime.date.today().strftime("%d-%m-%Y")
-        today_present = df[df["Date"] == today]["ID"].nunique()
+    win = tk.Toplevel(root)
+    win.title("Attendance Charts")
+    win.geometry("720x520")
 
-        if total_students > 0:
-            attendance_percent = (today_present / total_students) * 100
+    # -------- BAR CHART --------
+    date_counts = df.groupby("Date")["ID"].nunique()
 
-        if len(df) > 0:
-            top_id = df["ID"].value_counts().idxmax()
-            top_student = students.get(int(top_id), f"ID {top_id}")
+    fig, ax = plt.subplots(figsize=(6, 4))
+    date_counts.plot(kind="bar", ax=ax, color="skyblue")
+    ax.set_title("Attendance Count by Date")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Students Present")
 
-    # ---------------- UI CARDS ----------------
-    stats = [
-        ("Total Students", total_students),
-        ("Total Attendance Records", total_records),
-        ("Present Today", today_present),
-        ("Attendance % Today", f"{attendance_percent:.2f}%"),
-        ("Most Frequent Student", top_student)
-    ]
+    canvas = FigureCanvasTkAgg(fig, master=win)
+    canvas.draw()
+    canvas.get_tk_widget().pack(pady=15)
 
-    for label, value in stats:
-        card = tk.Frame(win, bg="#27293d", padx=15, pady=10)
-        card.pack(fill="x", padx=20, pady=6)
+    # -------- PIE CHART --------
+    today = datetime.date.today().strftime("%d-%m-%Y")
+    present_today = df[df["Date"] == today]["ID"].nunique()
+    absent_today = max(len(students) - present_today, 0)
 
-        tk.Label(
-            card, text=label,
-            font=("Segoe UI", 11),
-            fg="#cdd6f4",
-            bg="#27293d"
-        ).pack(side="left")
+    fig2, ax2 = plt.subplots(figsize=(4, 4))
+    ax2.pie(
+        [present_today, absent_today],
+        labels=["Present", "Absent"],
+        autopct="%1.1f%%",
+        startangle=90
+    )
+    ax2.set_title("Today's Attendance")
 
-        tk.Label(
-            card, text=value,
-            font=("Segoe UI", 12, "bold"),
-            fg="white",
-            bg="#27293d"
-        ).pack(side="right")
+    canvas2 = FigureCanvasTkAgg(fig2, master=win)
+    canvas2.draw()
+    canvas2.get_tk_widget().pack(pady=10)
+
 
 # ================= MAIN APP =================
 def main_app():
     global root
     root = tk.Tk()
     root.title("Face Recognition Attendance System")
-    root.geometry("480x580")
+    root.geometry("480x600")
 
     tk.Label(root, text="Face Recognition Attendance",
              font=("Segoe UI", 16, "bold")).pack(pady=15)
 
-    tk.Button(root, text="Add Student", width=30, command=add_student_window).pack(pady=6)
-    tk.Button(root, text="View Students", width=30, command=view_students_window).pack(pady=6)
-    tk.Button(root, text="Capture Dataset", width=30, command=capture_dataset_window).pack(pady=6)
-    tk.Button(root, text="Train Model", width=30, command=train_model_gui).pack(pady=6)
-    tk.Button(root, text="Start Attendance", width=30, command=start_attendance).pack(pady=6)
-    tk.Button(root, text="Stop & Save Attendance", width=30, command=stop_and_save).pack(pady=6)
+    buttons = [
+        ("Add Student", add_student_window),
+        ("View Students", view_students_window),
+        ("Capture Dataset", capture_dataset_window),
+        ("Train Model", train_model_gui),
+        ("Start Attendance", start_attendance),
+        ("Stop & Save Attendance", stop_and_save),
+        ("Attendance Analytics Dashboard", attendance_analytics_window),
+        ("Exit", root.destroy)
+    ]
 
-    # ⭐ NEW FEATURE BUTTON
-    tk.Button(root, text="Attendance Analytics Dashboard", width=30,
-              command=attendance_analytics_window).pack(pady=6)
-
-    tk.Button(root, text="Exit", width=30, command=root.destroy).pack(pady=15)
-    tk.Button(
-    root,
-    text="Attendance Analytics Dashboard",
-    width=30,
-    font=("Segoe UI", 12),
-    command=attendance_analytics_window).pack(pady=8)
-
+    for text, cmd in buttons:
+        tk.Button(root, text=text, width=30,
+                  command=cmd).pack(pady=6)
 
     root.mainloop()
 
