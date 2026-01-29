@@ -274,6 +274,69 @@ def attendance_analytics_window():
         tk.Label(frame, text=value, font=("Segoe UI", 11, "bold")).pack(side="left")
 
 
+def attendance_analytics_window():
+    win = tk.Toplevel(root)
+    win.title("Attendance Analytics Dashboard")
+    win.geometry("520x380")
+    win.configure(bg="#1e1e2e")
+
+    tk.Label(
+        win,
+        text="Attendance Analytics Dashboard",
+        font=("Segoe UI", 16, "bold"),
+        fg="white",
+        bg="#1e1e2e"
+    ).pack(pady=15)
+
+    # ---------------- DATA CALCULATION ----------------
+    total_students = len(students)
+    total_records = 0
+    today_present = 0
+    attendance_percent = 0
+    top_student = "N/A"
+
+    if os.path.exists(ATTENDANCE_FILE) and os.path.getsize(ATTENDANCE_FILE) > 0:
+        df = pd.read_csv(ATTENDANCE_FILE)
+
+        total_records = len(df)
+
+        today = datetime.date.today().strftime("%d-%m-%Y")
+        today_present = df[df["Date"] == today]["ID"].nunique()
+
+        if total_students > 0:
+            attendance_percent = (today_present / total_students) * 100
+
+        if len(df) > 0:
+            top_id = df["ID"].value_counts().idxmax()
+            top_student = students.get(int(top_id), f"ID {top_id}")
+
+    # ---------------- UI CARDS ----------------
+    stats = [
+        ("Total Students", total_students),
+        ("Total Attendance Records", total_records),
+        ("Present Today", today_present),
+        ("Attendance % Today", f"{attendance_percent:.2f}%"),
+        ("Most Frequent Student", top_student)
+    ]
+
+    for label, value in stats:
+        card = tk.Frame(win, bg="#27293d", padx=15, pady=10)
+        card.pack(fill="x", padx=20, pady=6)
+
+        tk.Label(
+            card, text=label,
+            font=("Segoe UI", 11),
+            fg="#cdd6f4",
+            bg="#27293d"
+        ).pack(side="left")
+
+        tk.Label(
+            card, text=value,
+            font=("Segoe UI", 12, "bold"),
+            fg="white",
+            bg="#27293d"
+        ).pack(side="right")
+
 # ================= MAIN APP =================
 def main_app():
     global root
@@ -296,6 +359,13 @@ def main_app():
               command=attendance_analytics_window).pack(pady=6)
 
     tk.Button(root, text="Exit", width=30, command=root.destroy).pack(pady=15)
+    tk.Button(
+    root,
+    text="Attendance Analytics Dashboard",
+    width=30,
+    font=("Segoe UI", 12),
+    command=attendance_analytics_window).pack(pady=8)
+
 
     root.mainloop()
 
